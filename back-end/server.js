@@ -1,111 +1,98 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const mysql = require('mysql2');
+const mysql = require('mysql2/promise');
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// MySQL connection
-const db = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    multipleStatements: true // Enable multiple statements
-});
+// Create and export pool for use throughout the application
+let pool;
 
-// Connect to MySQL
-db.connect(err => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
-    }
-    console.log('Connected to MySQL database');
-    
-    // Create table if it doesn't exist
-    const createTables = [
-        `CREATE TABLE IF NOT EXISTS fnb (
-            fnb_id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            type VARCHAR(100) NOT NULL,
-            price DECIMAL(10, 2) NOT NULL
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS menu (
-            menu_id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            is_vegetarian BOOLEAN DEFAULT FALSE,
-            price DECIMAL(10, 2) NOT NULL
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS menu_fnb (
-            menu_id INT,
-            fnb_id INT,
-            PRIMARY KEY (menu_id, fnb_id),
-            FOREIGN KEY (menu_id) REFERENCES menu(menu_id),
-            FOREIGN KEY (fnb_id) REFERENCES fnb(fnb_id)
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS orders (
-            order_id INT AUTO_INCREMENT PRIMARY KEY,
-            customer_id INT,
-            delivery_option VARCHAR(50) NOT NULL,
-            order_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-            status VARCHAR(50) NOT NULL
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS order_menu (
-            order_id INT,
-            menu_id INT,
-            quantity INT NOT NULL DEFAULT 1,
-            PRIMARY KEY (order_id, menu_id),
-            FOREIGN KEY (order_id) REFERENCES orders(order_id),
-            FOREIGN KEY (menu_id) REFERENCES menu(menu_id)
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS delivery (
-            delivery_id INT AUTO_INCREMENT PRIMARY KEY,
-            order_id INT UNIQUE,
-            delivery_date DATETIME,
-            delivery_status VARCHAR(50) NOT NULL,
-            carrier VARCHAR(100),
-            FOREIGN KEY (order_id) REFERENCES orders(order_id)
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS review (
-            review_id INT AUTO_INCREMENT PRIMARY KEY,
-            customer_id INT,
-            order_id INT UNIQUE,
-            rating INT NOT NULL,
-            comment TEXT,
-            FOREIGN KEY (order_id) REFERENCES orders(order_id)
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS payment (
-            payment_id INT AUTO_INCREMENT PRIMARY KEY,
-            order_id INT UNIQUE,
-            payment_method VARCHAR(50) NOT NULL,
-            payment_status VARCHAR(50) NOT NULL,
-            payment_date DATETIME,
-            amount DECIMAL(10, 2) NOT NULL,
-            FOREIGN KEY (order_id) REFERENCES orders(order_id)
-        )`
-    ];
-    
-    createTables.forEach((query) => {
-        db.query(query, (err) => {
-            if (err) {
-                console.error('Error creating table:', err);
-            } else {
-                console.log('Table created or already exists');
-            }
+async function initializePool() {
+    try {
+        pool = mysql.createPool({
+            host: process.env.DB_HOST,
+            user: process.env.DB_USER,
+            password: process.env.DB_PASSWORD,
+            database: process.env.DB_NAME,
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0
         });
-    });
-});
+
+        // Test the connection
+        await pool.getConnection();
+        console.log('Database connection established successfully');
+        return pool;
+    } catch (error) {
+        console.error('Error initializing database pool:', error);
+        process.exit(1);
+    }
+}
+
+// Initialize database tables
+async function initDatabase() {
+    try {
+        await initializePool(); // Make sure pool is initialized first
+        
+        const createTables = [
+            `CREATE TABLE IF NOT EXISTS fnb (
+                fnb_id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                type VARCHAR(100) NOT NULL,
+                price INT NOT NULL
+            )`,
+            
+            `CREATE TABLE IF NOT EXISTS menu (
+                menu_id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                is_vegetarian BOOLEAN DEFAULT FALSE,
+                price INT NOT NULL
+            )`,
+            
+            `CREATE TABLE IF NOT EXISTS menu_fnb (
+                menu_id INT,
+                fnb_id INT,
+                quantity INT NOT NULL DEFAULT 1,
+                PRIMARY KEY (menu_id, fnb_id),
+                FOREIGN KEY (menu_id) REFERENCES menu(menu_id),
+                FOREIGN KEY (fnb_id) REFERENCES fnb(fnb_id)
+            )`,
+            
+            `CREATE TABLE IF NOT EXISTS orders (
+                order_id INT AUTO_INCREMENT PRIMARY KEY,
+                customer_id INT,
+                delivery_option VARCHAR(50) NOT NULL,
+                order_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                status VARCHAR(50) NOT NULL,
+                total_amount INT NOT NULL
+            )`,
+            
+            `CREATE TABLE IF NOT EXISTS order_menu (
+                order_id INT,
+                menu_id INT,
+                quantity INT NOT NULL DEFAULT 1,
+                PRIMARY KEY (order_id, menu_id),
+                FOREIGN KEY (order_id) REFERENCES orders(order_id),
+                FOREIGN KEY (menu_id) REFERENCES menu(menu_id)
+            )`
+        ];
+
+        for (const query of createTables) {
+            await pool.query(query);
+        }
+        console.log('Database tables initialized successfully');
+    } catch (error) {
+        console.error('Error initializing database:', error);
+        process.exit(1);
+    }
+}
+
+// Initialize database on startup
+initDatabase().catch(console.error);
 
 // FnB Routes
 app.get('/api/fnb', async (req, res) => {
@@ -123,7 +110,7 @@ app.post('/api/fnb', async (req, res) => {
     try {
         const [result] = await pool.query(
             'INSERT INTO fnb (name, type, price) VALUES (?, ?, ?)',
-            [name, type, price]
+            [name, type, parseInt(price)]
         );
         res.status(201).json({ id: result.insertId, name, type, price });
     } catch (error) {
@@ -138,7 +125,7 @@ app.get('/api/menu', async (req, res) => {
         const [menus] = await pool.query('SELECT * FROM menu');
         for (let menu of menus) {
             const [fnbs] = await pool.query(
-                `SELECT f.* FROM fnb f 
+                `SELECT f.*, mf.quantity FROM fnb f 
                 JOIN menu_fnb mf ON f.fnb_id = mf.fnb_id 
                 WHERE mf.menu_id = ?`,
                 [menu.menu_id]
@@ -153,113 +140,115 @@ app.get('/api/menu', async (req, res) => {
 });
 
 app.post('/api/menu', async (req, res) => {
-    const { name, is_vegetarian, price, fnb_ids } = req.body;
-    const conn = await pool.getConnection();
+    const { name, is_vegetarian, price, fnb_items } = req.body;
+    const connection = await pool.getConnection();
+    
     try {
-        await conn.beginTransaction();
+        await connection.beginTransaction();
         
-        const [menuResult] = await conn.query(
+        const [menuResult] = await connection.query(
             'INSERT INTO menu (name, is_vegetarian, price) VALUES (?, ?, ?)',
-            [name, is_vegetarian, price]
+            [name, is_vegetarian, parseInt(price)]
         );
         
         const menu_id = menuResult.insertId;
         
-        // Add FnB associations
-        for (let fnb_id of fnb_ids) {
-            await conn.query(
-                'INSERT INTO menu_fnb (menu_id, fnb_id) VALUES (?, ?)',
-                [menu_id, fnb_id]
+        // Add FnB associations with quantities
+        for (let item of fnb_items) {
+            await connection.query(
+                'INSERT INTO menu_fnb (menu_id, fnb_id, quantity) VALUES (?, ?, ?)',
+                [menu_id, item.fnb_id, item.quantity]
             );
         }
         
-        await conn.commit();
+        await connection.commit();
         res.status(201).json({ 
             menu_id,
             name,
             is_vegetarian,
             price,
-            fnb_ids
+            fnb_items
         });
     } catch (error) {
-        await conn.rollback();
+        await connection.rollback();
         console.error('Error creating menu:', error);
         res.status(500).json({ error: 'Error creating menu' });
     } finally {
-        conn.release();
+        connection.release();
     }
 });
 
 // Order Routes
+app.get('/api/orders', async (req, res) => {
+    try {
+        const [orders] = await pool.query(`
+            SELECT o.*, 
+                   GROUP_CONCAT(m.name) as menu_names,
+                   GROUP_CONCAT(om.quantity) as quantities
+            FROM orders o
+            LEFT JOIN order_menu om ON o.order_id = om.order_id
+            LEFT JOIN menu m ON om.menu_id = m.menu_id
+            GROUP BY o.order_id
+            ORDER BY o.order_date DESC
+        `);
+        
+        // Process the results to create a more structured response
+        const processedOrders = orders.map(order => ({
+            ...order,
+            menu_names: order.menu_names ? order.menu_names.split(',') : [],
+            quantities: order.quantities ? order.quantities.split(',').map(Number) : []
+        }));
+        
+        res.json(processedOrders);
+    } catch (error) {
+        console.error('Error fetching orders:', error);
+        res.status(500).json({ error: 'Error fetching orders' });
+    }
+});
+
 app.post('/api/orders', async (req, res) => {
     const { customer_id, delivery_option, menu_items } = req.body;
-    const conn = await pool.getConnection();
+    const connection = await pool.getConnection();
     
     try {
-        await conn.beginTransaction();
+        await connection.beginTransaction();
         
-        const [orderResult] = await conn.query(
-            'INSERT INTO orders (customer_id, delivery_option, status) VALUES (?, ?, ?)',
-            [customer_id, delivery_option, 'PENDING']
+        // Calculate total amount
+        let total_amount = 0;
+        for (let item of menu_items) {
+            const [menuPrice] = await connection.query(
+                'SELECT price FROM menu WHERE menu_id = ?',
+                [item.menu_id]
+            );
+            total_amount += menuPrice[0].price * item.quantity;
+        }
+        
+        const [orderResult] = await connection.query(
+            'INSERT INTO orders (customer_id, delivery_option, status, total_amount) VALUES (?, ?, ?, ?)',
+            [customer_id, delivery_option, 'PENDING', total_amount]
         );
         
         const order_id = orderResult.insertId;
         
-        // Add menu items to order
         for (let item of menu_items) {
-            await conn.query(
+            await connection.query(
                 'INSERT INTO order_menu (order_id, menu_id, quantity) VALUES (?, ?, ?)',
                 [order_id, item.menu_id, item.quantity]
             );
         }
         
-        // Create associated delivery record
-        if (delivery_option !== 'pickup') {
-            await conn.query(
-                'INSERT INTO delivery (order_id, delivery_status) VALUES (?, ?)',
-                [order_id, 'PENDING']
-            );
-        }
-        
-        await conn.commit();
-        res.status(201).json({ order_id });
+        await connection.commit();
+        res.status(201).json({ 
+            order_id,
+            total_amount,
+            status: 'PENDING'
+        });
     } catch (error) {
-        await conn.rollback();
+        await connection.rollback();
         console.error('Error creating order:', error);
         res.status(500).json({ error: 'Error creating order' });
     } finally {
-        conn.release();
-    }
-});
-
-// Payment Routes
-app.post('/api/payments', async (req, res) => {
-    const { order_id, payment_method, amount } = req.body;
-    try {
-        const [result] = await pool.query(
-            `INSERT INTO payment (order_id, payment_method, payment_status, payment_date, amount) 
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)`,
-            [order_id, payment_method, 'PENDING', amount]
-        );
-        res.status(201).json({ payment_id: result.insertId });
-    } catch (error) {
-        console.error('Error creating payment:', error);
-        res.status(500).json({ error: 'Error creating payment' });
-    }
-});
-
-// Review Routes
-app.post('/api/reviews', async (req, res) => {
-    const { order_id, customer_id, rating, comment } = req.body;
-    try {
-        const [result] = await pool.query(
-            'INSERT INTO review (order_id, customer_id, rating, comment) VALUES (?, ?, ?, ?)',
-            [order_id, customer_id, rating, comment]
-        );
-        res.status(201).json({ review_id: result.insertId });
-    } catch (error) {
-        console.error('Error creating review:', error);
-        res.status(500).json({ error: 'Error creating review' });
+        connection.release();
     }
 });
 
