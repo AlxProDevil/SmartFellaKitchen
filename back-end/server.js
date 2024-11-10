@@ -8,7 +8,9 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Create and export pool for use throughout the application
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+
 let pool;
 
 async function initializePool() {
@@ -23,7 +25,6 @@ async function initializePool() {
             queueLimit: 0
         });
 
-        // Test the connection
         await pool.getConnection();
         console.log('Database connection established successfully');
         return pool;
@@ -36,9 +37,18 @@ async function initializePool() {
 // Initialize database tables
 async function initDatabase() {
     try {
-        await initializePool(); // Make sure pool is initialized first
+        await initializePool();
         
-        const createTables = [
+        createTables = [
+            `CREATE TABLE IF NOT EXISTS users (
+                user_id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(255) NOT NULL UNIQUE,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'user',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`,
+
             `CREATE TABLE IF NOT EXISTS fnb (
                 fnb_id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
@@ -66,6 +76,7 @@ async function initDatabase() {
                 order_id INT AUTO_INCREMENT PRIMARY KEY,
                 customer_id INT,
                 delivery_option VARCHAR(50) NOT NULL,
+                address VARCHAR(255),
                 order_date DATETIME DEFAULT CURRENT_TIMESTAMP,
                 status VARCHAR(50) NOT NULL,
                 total_amount INT NOT NULL
@@ -78,6 +89,14 @@ async function initDatabase() {
                 PRIMARY KEY (order_id, menu_id),
                 FOREIGN KEY (order_id) REFERENCES orders(order_id),
                 FOREIGN KEY (menu_id) REFERENCES menu(menu_id)
+            )`,
+            
+            `CREATE TABLE IF NOT EXISTS delivery (
+                delivery_id INT AUTO_INCREMENT PRIMARY KEY,
+                order_id INT UNIQUE,
+                address VARCHAR(255), 
+                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+                FOREIGN KEY (order_id) REFERENCES orders(order_id)
             )`
         ];
 
@@ -91,8 +110,119 @@ async function initDatabase() {
     }
 }
 
-// Initialize database on startup
 initDatabase().catch(console.error);
+
+// Register endpoint
+app.post('/api/auth/register', async (req, res) => {
+    const { username, email, password } = req.body;
+    
+    try {
+        // Check if user already exists
+        const [existingUsers] = await pool.query(
+            'SELECT * FROM users WHERE username = ? OR email = ?',
+            [username, email]
+        );
+        
+        if (existingUsers.length > 0) {
+            return res.status(400).json({ error: 'Username or email already exists' });
+        }
+        
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        // Create user
+        const [result] = await pool.query(
+            'INSERT INTO users (username, email, password) VALUES (?, ?, ?)',
+            [username, email, hashedPassword]
+        );
+        
+        // Generate JWT token
+        const token = jwt.sign(
+            { userId: result.insertId, username },
+            process.env.JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+        
+        res.status(201).json({
+            message: 'User registered successfully',
+            token,
+            user: {
+                userId: result.insertId,
+                username,
+                email
+            }
+        });
+    } catch (error) {
+        console.error('Registration error:', error);
+        res.status(500).json({ error: 'Error registering user' });
+    }
+});
+
+// Login endpoint
+app.post('/api/auth/login', async (req, res) => {
+    const { username, password } = req.body;
+    
+    try {
+        // Find user
+        const [users] = await pool.query(
+            'SELECT * FROM users WHERE username = ?',
+            [username]
+        );
+        
+        if (users.length === 0) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        const user = users[0];
+        
+        // Verify password
+        const validPassword = await bcrypt.compare(password, user.password);
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        // Generate JWT token
+        const token = jwt.sign(
+            { 
+                userId: user.user_id, 
+                username: user.username,
+                role: user.role // Include role in the token
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+        
+        res.json({
+            token,
+            user: {
+                userId: user.user_id,
+                username: user.username,
+                email: user.email,
+                role: user.role // Include role in the response
+            }
+        });
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Error logging in' });
+    }
+});
+
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) {
+        return res.status(401).json({ error: 'Access denied' });
+    }
+    
+    try {
+        const verified = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = verified;
+        next();
+    } catch (error) {
+        res.status(403).json({ error: 'Invalid token' });
+    }
+};
 
 // FnB Routes
 app.get('/api/fnb', async (req, res) => {
@@ -181,16 +311,27 @@ app.post('/api/menu', async (req, res) => {
 // Order Routes
 app.get('/api/orders', async (req, res) => {
     try {
-        const [orders] = await pool.query(`
+        let query = `
             SELECT o.*, 
                    GROUP_CONCAT(m.name) as menu_names,
                    GROUP_CONCAT(om.quantity) as quantities
             FROM orders o
             LEFT JOIN order_menu om ON o.order_id = om.order_id
             LEFT JOIN menu m ON om.menu_id = m.menu_id
+        `;
+        
+        const params = [];
+        if (req.query.customer_id) {
+            query += ' WHERE o.customer_id = ?';
+            params.push(req.query.customer_id);
+        }
+        
+        query += `
             GROUP BY o.order_id
             ORDER BY o.order_date DESC
-        `);
+        `;
+        
+        const [orders] = await pool.query(query, params);
         
         // Process the results to create a more structured response
         const processedOrders = orders.map(order => ({
@@ -206,47 +347,98 @@ app.get('/api/orders', async (req, res) => {
     }
 });
 
-app.post('/api/orders', async (req, res) => {
-    const { customer_id, delivery_option, menu_items } = req.body;
+// Order Routes
+app.get('/api/orders', authenticateToken, async (req, res) => {
+    try {
+        // Get user role from JWT token
+        const userRole = req.user.role;
+        const userId = req.user.userId;
+        
+        let query = `
+        SELECT o.*, 
+                GROUP_CONCAT(m.name) as menu_names,
+                GROUP_CONCAT(om.quantity) as quantities
+        FROM orders o
+        LEFT JOIN order_menu om ON o.order_id = om.order_id
+        LEFT JOIN menu m ON om.menu_id = m.menu_id
+        `;
+        
+        const params = [];
+        
+        // If user role is 'user', only show their orders
+        if (userRole === 'user') {
+        query += ' WHERE o.customer_id = ?';
+        params.push(userId);
+        }
+        // For admin/staff, show all orders (no WHERE clause needed)
+        
+        query += `
+        GROUP BY o.order_id
+        ORDER BY o.order_date DESC
+        `;
+        
+        const [orders] = await pool.query(query, params);
+        
+        // Process the results to create a more structured response
+        const processedOrders = orders.map(order => ({
+        ...order,
+        menu_names: order.menu_names ? order.menu_names.split(',') : [],
+        quantities: order.quantities ? order.quantities.split(',').map(Number) : []
+        }));
+        
+        res.json(processedOrders);
+    } catch (error) {
+        console.error('Error fetching orders:', error);
+        res.status(500).json({ error: 'Error fetching orders' });
+    }
+});
+
+// Delivery Routes
+app.get('/api/delivery', async (req, res) => {
+    try {
+        const [deliveries] = await pool.query(`
+            SELECT d.delivery_id, d.order_id, d.address, d.status, 
+                   GROUP_CONCAT(m.name) as menu_names
+            FROM delivery d
+            JOIN orders o ON d.order_id = o.order_id
+            LEFT JOIN order_menu om ON o.order_id = om.order_id
+            LEFT JOIN menu m ON om.menu_id = m.menu_id
+            GROUP BY d.delivery_id
+            ORDER BY d.delivery_id DESC
+        `);
+        res.json(deliveries);
+    } catch (error) {
+        console.error('Error fetching deliveries:', error);
+        res.status(500).json({ error: 'Error fetching deliveries' });
+    }
+});
+
+app.put('/api/delivery/:order_id', async (req, res) => {
+    const { status } = req.body;
+    const { order_id } = req.params;
     const connection = await pool.getConnection();
     
     try {
         await connection.beginTransaction();
         
-        // Calculate total amount
-        let total_amount = 0;
-        for (let item of menu_items) {
-            const [menuPrice] = await connection.query(
-                'SELECT price FROM menu WHERE menu_id = ?',
-                [item.menu_id]
-            );
-            total_amount += menuPrice[0].price * item.quantity;
-        }
-        
-        const [orderResult] = await connection.query(
-            'INSERT INTO orders (customer_id, delivery_option, status, total_amount) VALUES (?, ?, ?, ?)',
-            [customer_id, delivery_option, 'PENDING', total_amount]
+        // Update delivery status
+        await connection.query(
+            'UPDATE delivery SET status = ? WHERE order_id = ?',
+            [status, order_id]
         );
         
-        const order_id = orderResult.insertId;
-        
-        for (let item of menu_items) {
-            await connection.query(
-                'INSERT INTO order_menu (order_id, menu_id, quantity) VALUES (?, ?, ?)',
-                [order_id, item.menu_id, item.quantity]
-            );
-        }
+        // Update order status
+        await connection.query(
+            'UPDATE orders SET status = ? WHERE order_id = ?',
+            [status, order_id]
+        );
         
         await connection.commit();
-        res.status(201).json({ 
-            order_id,
-            total_amount,
-            status: 'PENDING'
-        });
+        res.json({ success: true });
     } catch (error) {
         await connection.rollback();
-        console.error('Error creating order:', error);
-        res.status(500).json({ error: 'Error creating order' });
+        console.error('Error updating delivery status:', error);
+        res.status(500).json({ error: 'Error updating delivery status' });
     } finally {
         connection.release();
     }
