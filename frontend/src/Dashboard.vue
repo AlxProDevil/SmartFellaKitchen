@@ -366,7 +366,6 @@
                       <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rating</th>
                       <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Comment</th>
                       <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-gray-200">
@@ -382,14 +381,6 @@
                       <td class="px-6 py-4">{{ review.comment }}</td>
                       <td class="px-6 py-4 whitespace-nowrap">
                         {{ formatDate(review.created_at) }}
-                      </td>
-                      <td class="px-6 py-4 whitespace-nowrap">
-                        <button 
-                          @click="viewOrderDetails(review.order_id)"
-                          class="text-blue-600 hover:text-blue-800"
-                        >
-                          View Order
-                        </button>
                       </td>
                     </tr>
                   </tbody>
