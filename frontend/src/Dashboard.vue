@@ -20,6 +20,12 @@
                 {{ tab }}
               </button>
             </div>
+            <button 
+                @click="handleLogout"
+                class="px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700 ml-4"
+            >
+                Logout
+            </button>
           </div>
         </div>
       </nav>
@@ -209,29 +215,30 @@
                     <td class="px-6 py-4 whitespace-nowrap">#{{ order.order_id }}</td>
                     <td class="px-6 py-4 whitespace-nowrap">{{ order.customer_id }}</td>
                     <td class="px-6 py-4 whitespace-nowrap">{{ order.address }}</td>
-                    <td class="px-6 py-4">
-                      <ul class="list-disc list-inside">
-                        <li v-for="(name, index) in order.menu_names" :key="index">
-                          {{ name }} (x{{ order.quantities[index] }})
-                        </li>
-                      </ul>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">Rp {{ order.total_amount }}</td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                      <span 
-                        :class="{
-                          'px-2 py-1 rounded text-sm': true,
-                          'bg-yellow-100 text-yellow-800': order.status === 'PENDING',
-                          'bg-green-100 text-green-800': order.status === 'COMPLETED',
-                          'bg-red-100 text-red-800': order.status === 'CANCELLED'
-                        }"
-                      >
-                        {{ order.status }}
-                      </span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                      {{ new Date(order.order_date).toLocaleString() }}
-                    </td>
+                  <td class="px-6 py-4">
+                    <ul class="list-disc list-inside">
+                      <li v-for="(item, index) in order.items" :key="index">
+                        {{ item.name }} (x{{ item.quantity }})
+                      </li>
+                    </ul>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">Rp {{ order.total_amount }}</td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span 
+                      :class="{
+                        'px-2 py-1 rounded text-sm': true,
+                        'bg-yellow-100 text-yellow-800': order.status === 'PENDING',
+                        'bg-blue-100 text-blue-800': order.status === 'PREPARING',
+                        'bg-purple-100 text-purple-800': ['DELIVERING', 'READY'].includes(order.status),
+                        'bg-green-100 text-green-800': ['FINISHED', 'PICKED UP'].includes(order.status)
+                      }"
+                    >
+                      {{ order.status }}
+                    </span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    {{ new Date(order.order_date).toLocaleString() }}
+                  </td>
                   </tr>
                 </tbody>
               </table>
@@ -241,66 +248,158 @@
       </div>
 
       <!-- Delivery Management -->
-      <div v-if="currentTab === 'Delivery'" class="space-y-6">
-        <div class="bg-white rounded-lg shadow">
+    <div v-if="currentTab === 'Delivery'" class="space-y-6">
+    <div class="bg-white rounded-lg shadow">
+        <div class="p-6">
+        <h2 class="text-2xl font-bold mb-4">Delivery Management</h2>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+            <thead>
+                <tr>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delivery ID</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Order Info</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+                <tr v-for="delivery in deliveries" :key="delivery.delivery_id">
+                <td class="px-6 py-4 whitespace-nowrap">#{{ delivery.delivery_id }}</td>
+                <td class="px-6 py-4">
+                    <div class="space-y-1">
+                    <p class="font-medium">Order #{{ delivery.order_id }}</p>
+                    <p class="text-sm text-gray-500">{{ delivery.customer_name }}</p>
+                    <p class="text-sm text-gray-500">{{ delivery.address }}</p>
+                    </div>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                    <span 
+                    :class="{
+                        'px-2 py-1 rounded text-sm': true,
+                        'bg-yellow-100 text-yellow-800': delivery.status === 'PENDING',
+                        'bg-blue-100 text-blue-800': delivery.status === 'PREPARING',
+                        'bg-purple-100 text-purple-800': ['DELIVERING', 'READY'].includes(delivery.status),
+                        'bg-green-100 text-green-800': ['FINISHED', 'PICKED UP'].includes(delivery.status)
+                    }"
+                    >
+                    {{ delivery.status }}
+                    </span>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                    <select 
+                    :value="delivery.status"
+                    @change="updateDeliveryStatus(delivery.order_id, $event.target.value)"
+                    class="shadow border rounded py-1 px-2 text-gray-700"
+                    >
+                    <option 
+                        v-for="status in getAvailableStatuses(delivery.address)" 
+                        :key="status" 
+                        :value="status"
+                    >
+                        {{ status }}
+                    </option>
+                    </select>
+                </td>
+                </tr>
+            </tbody>
+            </table>
+        </div>
+        </div>
+    </div>
+    </div>
+    <!-- Reviews Tab -->
+    <div v-if="currentTab === 'Reviews'" class="space-y-6">
+          <div class="bg-white rounded-lg shadow">
             <div class="p-6">
-                <h2 class="text-2xl font-bold mb-4">Delivery Management</h2>
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead>
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delivery ID</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Order ID</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Address</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Items</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-200">
-                            <tr v-for="delivery in deliveries" :key="delivery.delivery_id">
-                                <td class="px-6 py-4 whitespace-nowrap">#{{ delivery.delivery_id }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap">#{{ delivery.order_id }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap">{{ delivery.address }}</td>
-                                <td class="px-6 py-4">{{ delivery.menu_names }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <span 
-                                        :class="{
-                                            'px-2 py-1 rounded text-sm': true,
-                                            'bg-yellow-100 text-yellow-800': delivery.status === 'PENDING',
-                                            'bg-blue-100 text-blue-800': delivery.status === 'PREPARING',
-                                            'bg-purple-100 text-purple-800': delivery.status === 'DELIVERING',
-                                            'bg-green-100 text-green-800': delivery.status === 'FINISHED',
-                                            'bg-orange-100 text-orange-800': delivery.status === 'READY'
-                                        }"
-                                    >
-                                        {{ delivery.status }}
-                                    </span>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <select 
-                                        :value="delivery.status"
-                                        @change="updateDeliveryStatus(delivery.order_id, $event.target.value)"
-                                        class="shadow border rounded py-1 px-2 text-gray-700"
-                                    >
-                                        <option 
-                                            v-for="status in getAvailableStatuses(delivery.address)" 
-                                            :key="status" 
-                                            :value="status"
-                                        >
-                                            {{ status }}
-                                        </option>
-                                    </select>
-                                  </td>
-                              </tr>
-                          </tbody>
-                      </table>
-                  </div>
+              <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-bold">Customer Reviews</h2>
+                <div class="flex items-center space-x-4">
+                  <select 
+                    v-model="reviewsFilter"
+                    class="shadow border rounded py-2 px-3 text-gray-700"
+                  >
+                    <option value="all">All Ratings</option>
+                    <option value="5">5 Stars</option>
+                    <option value="4">4 Stars</option>
+                    <option value="3">3 Stars</option>
+                    <option value="2">2 Stars</option>
+                    <option value="1">1 Star</option>
+                  </select>
+                </div>
               </div>
+
+              <!-- Reviews Summary -->
+              <div class="bg-gray-50 p-4 rounded-lg mb-6">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div class="text-center">
+                    <div class="text-2xl font-bold">{{ averageRating.toFixed(1) }}</div>
+                    <div class="text-yellow-400 text-xl">
+                      <span v-for="i in 5" :key="i">
+                        {{ i <= Math.round(averageRating) ? '★' : '☆' }}
+                      </span>
+                    </div>
+                    <div class="text-sm text-gray-600">Average Rating</div>
+                  </div>
+                  <div class="text-center">
+                    <div class="text-2xl font-bold">{{ reviews.length }}</div>
+                    <div class="text-sm text-gray-600">Total Reviews</div>
+                  </div>
+                  <div class="text-center">
+                    <div class="text-2xl font-bold text-green-600">
+                      {{ ((reviews.filter(r => r.rating >= 4).length / reviews.length) * 100).toFixed(1) }}%
+                    </div>
+                    <div class="text-sm text-gray-600">Positive Reviews</div>
+                  </div>
+                  <div class="text-center">
+                    <div class="text-2xl font-bold">{{ latestReviewDate }}</div>
+                    <div class="text-sm text-gray-600">Latest Review</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Reviews Table -->
+              <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                  <thead>
+                    <tr>
+                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Order ID</th>
+                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rating</th>
+                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Comment</th>
+                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                      <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-gray-200">
+                    <tr v-for="review in filteredReviews" :key="review.review_id">
+                      <td class="px-6 py-4 whitespace-nowrap">#{{ review.order_id }}</td>
+                      <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex items-center text-yellow-400">
+                          <span v-for="i in 5" :key="i">
+                            {{ i <= review.rating ? '★' : '☆' }}
+                          </span>
+                        </div>
+                      </td>
+                      <td class="px-6 py-4">{{ review.comment }}</td>
+                      <td class="px-6 py-4 whitespace-nowrap">
+                        {{ formatDate(review.created_at) }}
+                      </td>
+                      <td class="px-6 py-4 whitespace-nowrap">
+                        <button 
+                          @click="viewOrderDetails(review.order_id)"
+                          class="text-blue-600 hover:text-blue-800"
+                        >
+                          View Order
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
+        </div>
       </div>
     </div>
-  </div>
 </template>
 
 <script>
@@ -312,7 +411,7 @@ export default {
   data() {
     return {
       currentTab: 'FnB',
-      tabs: ['FnB', 'Menu', 'Orders', 'Delivery'],
+      tabs: ['FnB', 'Menu', 'Orders', 'Delivery', 'Reviews'],
       
       // FnB data
       fnbItems: [],
@@ -333,20 +432,18 @@ export default {
         fnb_items: []
       },
       
-       // Order data
-       orders: [],          // New: Store order history
-      selectedMenus: [],
-      menuQuantities: {},
-      orderForm: {
-        customer_id: '',
-        delivery_option: 'delivery',
-        address: ''
-      },
+    // Order data
+    orders: [],
 
       // Delivery data
       deliveries: [],
       deliveryStatuses: ['PENDING', 'PREPARING', 'DELIVERING', 'FINISHED'],
-      pickupStatuses: ['PENDING', 'PREPARING', 'READY', 'PICKED UP']
+      pickupStatuses: ['PENDING', 'PREPARING', 'READY', 'PICKED UP'],
+
+      reviews: [],
+      reviewsFilter: 'all',
+      selectedOrder: null,
+      showOrderModal: false,
     };
   },
 
@@ -355,9 +452,47 @@ export default {
     await this.fetchMenus();
     await this.fetchOrders();
     await this.fetchDeliveries();
+    await this.fetchReviews();
+  },
+
+  computed: {
+    filteredReviews() {
+      if (this.reviewsFilter === 'all') {
+        return this.reviews;
+      }
+      return this.reviews.filter(review => 
+        review.rating === parseInt(this.reviewsFilter)
+      );
+    },
+
+    averageRating() {
+      if (this.reviews.length === 0) return 0;
+      const sum = this.reviews.reduce((acc, review) => acc + review.rating, 0);
+      return sum / this.reviews.length;
+    },
+
+    latestReviewDate() {
+      if (this.reviews.length === 0) return 'No reviews yet';
+      const latest = new Date(Math.max(...this.reviews.map(r => new Date(r.created_at))));
+      return this.formatDate(latest);
+    }
   },
 
   methods: {
+    // Add logout method
+    async handleLogout() {
+      try {
+        // Clear local storage
+        localStorage.removeItem('token');
+        localStorage.removeItem('userRole');
+        
+        // Redirect to login page
+        this.$router.push('/');
+      } catch (error) {
+        console.error('Error during logout:', error);
+      }
+    },
+    
     // FnB methods
     async fetchFnB() {
       try {
@@ -428,41 +563,29 @@ export default {
 
     async fetchOrders() {
       try {
-        const response = await axios.get(`${API_URL}/orders`);
+        // Get the JWT token from localStorage
+        const token = localStorage.getItem('token');
+        if (!token) {
+          console.error('No authentication token found');
+          this.$router.push('/login');
+          return;
+        }
+
+        const response = await axios.get(`${API_URL}/orders`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
         this.orders = response.data;
       } catch (error) {
         console.error('Error fetching orders:', error);
-      }
-    },
-
-    // Update the saveOrder method
-    async saveOrder() {
-      try {
-        const menuItems = this.selectedMenus.map(menuId => ({
-          menu_id: menuId,
-          quantity: parseInt(this.menuQuantities[menuId] || 1)
-        }));
-
-        // Include address in the request payload
-        await axios.post(`${API_URL}/orders`, {
-          customer_id: parseInt(this.orderForm.customer_id),
-          delivery_option: this.orderForm.delivery_option,
-          address: this.orderForm.address, // Ensure address is sent to the backend
-          menu_items: menuItems
-        });
-
-        await this.fetchOrders(); // Fetch updated orders
-
-        // Reset form fields
-        this.selectedMenus = [];
-        this.menuQuantities = {};
-        this.orderForm = {
-          customer_id: '',
-          delivery_option: 'delivery',
-          address: '' // Reset address field
-        };
-      } catch (error) {
-        console.error('Error saving order:', error);
+        if (error.response && error.response.status === 401) {
+          // Token expired or invalid
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          this.$router.push('/login');
+        }
       }
     },
 
@@ -487,6 +610,23 @@ export default {
       } catch (error) {
           console.error('Error updating delivery status:', error);
       }
+    },
+
+    async fetchReviews() {
+      try {
+        const response = await axios.get(`${API_URL}/reviews`);
+        this.reviews = response.data;
+      } catch (error) {
+        console.error('Error fetching reviews:', error);
+      }
+    },
+
+    formatDate(date) {
+      return new Date(date).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
     }
   }
 };

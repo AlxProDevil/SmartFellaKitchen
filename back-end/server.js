@@ -90,12 +90,30 @@ async function initDatabase() {
                 FOREIGN KEY (order_id) REFERENCES orders(order_id),
                 FOREIGN KEY (menu_id) REFERENCES menu(menu_id)
             )`,
+
+            `CREATE TABLE IF NOT EXISTS order_fnb (
+                order_id INT,
+                fnb_id INT,
+                quantity INT NOT NULL DEFAULT 1,
+                PRIMARY KEY (order_id, fnb_id),
+                FOREIGN KEY (order_id) REFERENCES orders(order_id),
+                FOREIGN KEY (fnb_id) REFERENCES fnb(fnb_id)
+            );`,
             
             `CREATE TABLE IF NOT EXISTS delivery (
                 delivery_id INT AUTO_INCREMENT PRIMARY KEY,
                 order_id INT UNIQUE,
                 address VARCHAR(255), 
                 status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+                FOREIGN KEY (order_id) REFERENCES orders(order_id)
+            )`,
+
+            `CREATE TABLE IF NOT EXISTS reviews (
+                review_id INT AUTO_INCREMENT PRIMARY KEY,
+                order_id INT UNIQUE,
+                rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                comment TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (order_id) REFERENCES orders(order_id)
             )`
         ];
@@ -309,87 +327,140 @@ app.post('/api/menu', async (req, res) => {
 });
 
 // Order Routes
-app.get('/api/orders', async (req, res) => {
+app.get('/api/orders', authenticateToken, async (req, res) => {
     try {
-        let query = `
-            SELECT o.*, 
-                   GROUP_CONCAT(m.name) as menu_names,
-                   GROUP_CONCAT(om.quantity) as quantities
-            FROM orders o
-            LEFT JOIN order_menu om ON o.order_id = om.order_id
-            LEFT JOIN menu m ON om.menu_id = m.menu_id
-        `;
+        // Get the user ID and role from the authenticated token
+        const { userId, role } = req.user;
         
-        const params = [];
-        if (req.query.customer_id) {
-            query += ' WHERE o.customer_id = ?';
-            params.push(req.query.customer_id);
+        let orders;
+        
+        if (role === 'admin') {
+            // Admin can see all orders
+            [orders] = await pool.query(`
+                SELECT o.*, u.username as customer_name 
+                FROM orders o
+                JOIN users u ON o.customer_id = u.user_id
+                ORDER BY order_date DESC
+            `);
+        } else {
+            // Regular users can only see their own orders
+            [orders] = await pool.query(`
+                SELECT o.*, u.username as customer_name 
+                FROM orders o
+                JOIN users u ON o.customer_id = u.user_id
+                WHERE customer_id = ?
+                ORDER BY order_date DESC
+            `, [userId]);
+        }
+
+        // For each order, fetch menu items and fnb items
+        for (let order of orders) {
+            // Get menu items
+            const [menuItems] = await pool.query(`
+                SELECT m.name, m.price, om.quantity
+                FROM order_menu om
+                JOIN menu m ON om.menu_id = m.menu_id
+                WHERE om.order_id = ?
+            `, [order.order_id]);
+
+            // Get fnb items
+            const [fnbItems] = await pool.query(`
+                SELECT f.name, f.price, of.quantity
+                FROM order_fnb of
+                JOIN fnb f ON of.fnb_id = f.fnb_id
+                WHERE of.order_id = ?
+            `, [order.order_id]);
+
+            // Combine all items
+            order.items = [...menuItems, ...fnbItems];
         }
         
-        query += `
-            GROUP BY o.order_id
-            ORDER BY o.order_date DESC
-        `;
-        
-        const [orders] = await pool.query(query, params);
-        
-        // Process the results to create a more structured response
-        const processedOrders = orders.map(order => ({
-            ...order,
-            menu_names: order.menu_names ? order.menu_names.split(',') : [],
-            quantities: order.quantities ? order.quantities.split(',').map(Number) : []
-        }));
-        
-        res.json(processedOrders);
+        res.json(orders);
     } catch (error) {
         console.error('Error fetching orders:', error);
         res.status(500).json({ error: 'Error fetching orders' });
     }
 });
 
-// Order Routes
-app.get('/api/orders', authenticateToken, async (req, res) => {
+app.post('/api/orders', async (req, res) => {
+    const { customer_id, delivery_option, address, menu_items, fnb_items } = req.body;
+    const connection = await pool.getConnection();
+    
     try {
-        // Get user role from JWT token
-        const userRole = req.user.role;
-        const userId = req.user.userId;
+        await connection.beginTransaction();
         
-        let query = `
-        SELECT o.*, 
-                GROUP_CONCAT(m.name) as menu_names,
-                GROUP_CONCAT(om.quantity) as quantities
-        FROM orders o
-        LEFT JOIN order_menu om ON o.order_id = om.order_id
-        LEFT JOIN menu m ON om.menu_id = m.menu_id
-        `;
+        // Calculate total amount
+        let total_amount = 0;
         
-        const params = [];
-        
-        // If user role is 'user', only show their orders
-        if (userRole === 'user') {
-        query += ' WHERE o.customer_id = ?';
-        params.push(userId);
+        // Calculate menu items total
+        for (let item of menu_items || []) {
+            const [menuPrice] = await connection.query(
+                'SELECT price FROM menu WHERE menu_id = ?',
+                [item.menu_id]
+            );
+            if (menuPrice[0]) {
+                total_amount += menuPrice[0].price * item.quantity;
+            }
         }
-        // For admin/staff, show all orders (no WHERE clause needed)
         
-        query += `
-        GROUP BY o.order_id
-        ORDER BY o.order_date DESC
-        `;
+        // Calculate FnB items total
+        for (let item of fnb_items || []) {
+            const [fnbPrice] = await connection.query(
+                'SELECT price FROM fnb WHERE fnb_id = ?',
+                [item.fnb_id]
+            );
+            if (fnbPrice[0]) {
+                total_amount += fnbPrice[0].price * item.quantity;
+            }
+        }
         
-        const [orders] = await pool.query(query, params);
+        // Create order
+        const [orderResult] = await connection.query(
+            'INSERT INTO orders (customer_id, delivery_option, address, status, total_amount) VALUES (?, ?, ?, ?, ?)',
+            [customer_id, delivery_option, address, 'PENDING', total_amount]
+        );
         
-        // Process the results to create a more structured response
-        const processedOrders = orders.map(order => ({
-        ...order,
-        menu_names: order.menu_names ? order.menu_names.split(',') : [],
-        quantities: order.quantities ? order.quantities.split(',').map(Number) : []
-        }));
+        const order_id = orderResult.insertId;
         
-        res.json(processedOrders);
+        // Insert menu items
+        if (menu_items && menu_items.length > 0) {
+            for (let item of menu_items) {
+                await connection.query(
+                    'INSERT INTO order_menu (order_id, menu_id, quantity) VALUES (?, ?, ?)',
+                    [order_id, item.menu_id, item.quantity]
+                );
+            }
+        }
+        
+        // Insert FnB items
+        if (fnb_items && fnb_items.length > 0) {
+            for (let item of fnb_items) {
+                await connection.query(
+                    'INSERT INTO order_fnb (order_id, fnb_id, quantity) VALUES (?, ?, ?)',
+                    [order_id, item.fnb_id, item.quantity]
+                );
+            }
+        }
+
+        if (delivery_option === 'delivery' || delivery_option === 'pickup') {
+            await connection.query(
+                'INSERT INTO delivery (order_id, address, status) VALUES (?, ?, ?)',
+                [order_id, address, 'PENDING']
+            );
+        }
+        
+        await connection.commit();
+        res.status(201).json({ 
+            order_id,
+            total_amount,
+            status: 'PENDING'
+        });
     } catch (error) {
-        console.error('Error fetching orders:', error);
-        res.status(500).json({ error: 'Error fetching orders' });
+        await connection.rollback();
+        console.error('Error creating order:', error);
+        res.status(500).json({ error: 'Error creating order' });
+    } finally {
+        connection.release();
     }
 });
 
@@ -401,8 +472,6 @@ app.get('/api/delivery', async (req, res) => {
                    GROUP_CONCAT(m.name) as menu_names
             FROM delivery d
             JOIN orders o ON d.order_id = o.order_id
-            LEFT JOIN order_menu om ON o.order_id = om.order_id
-            LEFT JOIN menu m ON om.menu_id = m.menu_id
             GROUP BY d.delivery_id
             ORDER BY d.delivery_id DESC
         `);
@@ -441,6 +510,56 @@ app.put('/api/delivery/:order_id', async (req, res) => {
         res.status(500).json({ error: 'Error updating delivery status' });
     } finally {
         connection.release();
+    }
+});
+
+// Get all reviews
+app.get('/api/reviews', async (req, res) => {
+    try {
+        const [reviews] = await pool.query(`
+            SELECT r.*, o.customer_id, o.order_date 
+            FROM reviews r
+            JOIN orders o ON r.order_id = o.order_id
+            ORDER BY r.created_at DESC
+        `);
+        res.json(reviews);
+    } catch (error) {
+        console.error('Error fetching reviews:', error);
+        res.status(500).json({ error: 'Error fetching reviews' });
+    }
+});
+
+// Get review by order ID
+app.get('/api/reviews/:orderId', async (req, res) => {
+    try {
+        const [review] = await pool.query(
+            'SELECT * FROM reviews WHERE order_id = ?',
+            [req.params.orderId]
+        );
+        res.json(review[0] || null);
+    } catch (error) {
+        console.error('Error fetching review:', error);
+        res.status(500).json({ error: 'Error fetching review' });
+    }
+});
+
+// Create review
+app.post('/api/reviews', async (req, res) => {
+    const { order_id, rating, comment } = req.body;
+    try {
+        const [result] = await pool.query(
+            'INSERT INTO reviews (order_id, rating, comment) VALUES (?, ?, ?)',
+            [order_id, rating, comment]
+        );
+        res.status(201).json({ 
+            review_id: result.insertId,
+            order_id,
+            rating,
+            comment
+        });
+    } catch (error) {
+        console.error('Error creating review:', error);
+        res.status(500).json({ error: 'Error creating review' });
     }
 });
 
