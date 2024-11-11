@@ -326,6 +326,69 @@ app.post('/api/menu', async (req, res) => {
     }
 });
 
+app.delete('/api/menu/:menu_id', async (req, res) => {
+    const { menu_id } = req.params;
+    const connection = await pool.getConnection();
+  
+    try {
+      await connection.beginTransaction();
+  
+      // First, delete any records in order_menu that reference the menu_id
+      await connection.query('DELETE FROM order_menu WHERE menu_id = ?', [menu_id]);
+  
+      // Then, delete associations in menu_fnb table
+      await connection.query('DELETE FROM menu_fnb WHERE menu_id = ?', [menu_id]);
+  
+      // Finally, delete the menu item
+      await connection.query('DELETE FROM menu WHERE menu_id = ?', [menu_id]);
+  
+      await connection.commit();
+      res.status(200).json({ message: 'Menu deleted successfully' });
+    } catch (error) {
+      await connection.rollback();
+      console.error('Error deleting menu:', error);
+      res.status(500).json({ error: 'Error deleting menu' });
+    } finally {
+      connection.release();
+    }
+  });
+
+  app.put('/api/menu/:menu_id', async (req, res) => {
+    const { menu_id } = req.params;
+    const { name, is_vegetarian, price, fnb_items } = req.body;
+    const connection = await pool.getConnection();
+  
+    try {
+      await connection.beginTransaction();
+  
+      // Update the menu details
+      await connection.query(
+        'UPDATE menu SET name = ?, is_vegetarian = ?, price = ? WHERE menu_id = ?',
+        [name, is_vegetarian, price, menu_id]
+      );
+  
+      // Delete existing fnb associations and reinsert updated quantities
+      await connection.query('DELETE FROM menu_fnb WHERE menu_id = ?', [menu_id]);
+  
+      for (const item of fnb_items) {
+        await connection.query(
+          'INSERT INTO menu_fnb (menu_id, fnb_id, quantity) VALUES (?, ?, ?)',
+          [menu_id, item.fnb_id, item.quantity]
+        );
+      }
+  
+      await connection.commit();
+      res.status(200).json({ message: 'Menu updated successfully' });
+    } catch (error) {
+      await connection.rollback();
+      console.error('Error updating menu:', error);
+      res.status(500).json({ error: 'Error updating menu' });
+    } finally {
+      connection.release();
+    }
+  });
+  
+
 // Order Routes
 app.get('/api/orders', authenticateToken, async (req, res) => {
     try {
@@ -468,14 +531,42 @@ app.post('/api/orders', async (req, res) => {
 app.get('/api/delivery', async (req, res) => {
     try {
         const [deliveries] = await pool.query(`
-            SELECT d.delivery_id, d.order_id, d.address, d.status, 
-                   GROUP_CONCAT(m.name) as menu_names
+            SELECT 
+                d.delivery_id,
+                d.order_id,
+                d.address,
+                d.status,
+                o.total_amount,
+                o.order_date,
+                GROUP_CONCAT(DISTINCT 
+                    CASE 
+                        WHEN m.name IS NOT NULL THEN CONCAT(m.name, ' (', om.quantity, ')')
+                        WHEN f.name IS NOT NULL THEN CONCAT(f.name, ' (', of.quantity, ')')
+                    END
+                    SEPARATOR ', '
+                ) as items
             FROM delivery d
             JOIN orders o ON d.order_id = o.order_id
-            GROUP BY d.delivery_id
-            ORDER BY d.delivery_id DESC
+            LEFT JOIN order_menu om ON o.order_id = om.order_id
+            LEFT JOIN menu m ON om.menu_id = m.menu_id
+            LEFT JOIN order_fnb of ON o.order_id = of.order_id
+            LEFT JOIN fnb f ON of.fnb_id = f.fnb_id
+            GROUP BY d.delivery_id, d.order_id, d.address, d.status, o.total_amount, o.order_date
+            ORDER BY o.order_date DESC
         `);
-        res.json(deliveries);
+
+        // Format the response
+        const formattedDeliveries = deliveries.map(delivery => ({
+            delivery_id: delivery.delivery_id,
+            order_id: delivery.order_id,
+            address: delivery.address,
+            status: delivery.status,
+            total_amount: delivery.total_amount,
+            order_date: delivery.order_date,
+            items: delivery.items ? delivery.items.split(', ') : []
+        }));
+
+        res.json(formattedDeliveries);
     } catch (error) {
         console.error('Error fetching deliveries:', error);
         res.status(500).json({ error: 'Error fetching deliveries' });

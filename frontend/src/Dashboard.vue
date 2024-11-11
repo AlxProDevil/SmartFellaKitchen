@@ -186,6 +186,18 @@
                     </li>
                   </ul>
                 </div>
+                <button 
+                  @click="editMenu(menu)"
+                  class="bg-yellow-500 text-white font-bold py-2 px-4 rounded hover:bg-yellow-600 mt-4 mr-2"
+                >
+                  Edit
+                </button>
+                <button 
+                  @click="deleteMenu(menu.menu_id)"
+                  class="bg-red-600 text-white font-bold py-2 px-4 rounded hover:bg-red-700 mt-4"
+                >
+                  Delete
+                </button>
               </div>
             </div>
           </div>
@@ -391,6 +403,56 @@
         </div>
       </div>
     </div>
+
+    <!-- Edit Modal -->
+    <div v-if="showEditModal" class="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50">
+      <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-md">
+        <h2 class="text-2xl font-bold mb-4">Edit Menu Item</h2>
+        <form @submit.prevent="saveEditedMenu" class="space-y-4">
+          <div>
+            <label class="block text-gray-700 text-sm font-bold mb-2">Name:</label>
+            <input 
+              v-model="editForm.name"
+              class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700"
+              required
+            >
+          </div>
+          <div>
+            <label class="block text-gray-700 text-sm font-bold mb-2">
+              <input 
+                type="checkbox"
+                v-model="editForm.is_vegetarian"
+                class="mr-2"
+              >
+              Vegetarian
+            </label>
+          </div>
+          <div>
+            <label class="block text-gray-700 text-sm font-bold mb-2">Price:</label>
+            <input 
+              v-model="editForm.price"
+              type="number"
+              class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700"
+              required
+            >
+          </div>
+          <div class="flex justify-end">
+            <button 
+              @click="showEditModal = false"
+              class="bg-gray-500 text-white font-bold py-2 px-4 rounded mr-2"
+            >
+              Cancel
+            </button>
+            <button 
+              type="submit"
+              class="bg-blue-500 text-white font-bold py-2 px-4 rounded"
+            >
+              Save Changes
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
 </template>
 
 <script>
@@ -435,6 +497,15 @@ export default {
       reviewsFilter: 'all',
       selectedOrder: null,
       showOrderModal: false,
+
+      editForm: {
+        id: null,
+        name: '',
+        is_vegetarian: false,
+        price: '',
+        fnb_items: []
+      },
+      showEditModal: false
     };
   },
 
@@ -552,6 +623,18 @@ export default {
       }
     },
 
+    async deleteMenu(menuId) {
+      try {
+        // Send DELETE request to the backend API
+        await axios.delete(`${API_URL}/menu/${menuId}`);
+        
+        // Update the menus list after deletion
+        await this.fetchMenus();
+      } catch (error) {
+        console.error('Error deleting menu:', error);
+      }
+    },
+
     async fetchOrders() {
       try {
         // Get the JWT token from localStorage
@@ -618,6 +701,41 @@ export default {
         month: 'short',
         day: 'numeric'
       });
+    },
+
+    editMenu(menu) {
+      // Populate the edit form with the selected menu details
+      this.editForm = {
+        id: menu.menu_id,
+        name: menu.name,
+        is_vegetarian: menu.is_vegetarian,
+        price: menu.price,
+        fnb_items: menu.fnbs.map(fnb => ({
+          fnb_id: fnb.fnb_id,
+          quantity: fnb.quantity
+        }))
+      };
+      this.showEditModal = true;
+    },
+
+    async saveEditedMenu() {
+      try {
+        const updatedMenu = {
+          name: this.editForm.name,
+          is_vegetarian: this.editForm.is_vegetarian,
+          price: parseInt(this.editForm.price),
+          fnb_items: this.editForm.fnb_items
+        };
+        
+        // Send PUT request to update the menu in the backend
+        await axios.put(`${API_URL}/menu/${this.editForm.id}`, updatedMenu);
+
+        // Refresh menus list and close the edit modal
+        await this.fetchMenus();
+        this.showEditModal = false;
+      } catch (error) {
+        console.error('Error updating menu:', error);
+      }
     }
   }
 };
